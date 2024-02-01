@@ -1,23 +1,85 @@
 import os
 import json
 from slack import WebClient
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from slackeventsapi import SlackEventAdapter
-# import sqlite3
-# import gspread
-# from google.oauth2.service_account import Credentials
+import sqlite3
+import gspread
+import traceback
+from google.oauth2.service_account import Credentials
 # import requests
 # import asyncio
 
 # Initialize Flask app
 app = Flask(__name__)
 
-# # Database configuration
-# DATABASE = 'messages'
+# Database configuration
+DATABASE = 'knowledge-crow'
 
-# # Create the table on startup
-# create_table()
+def create_table():
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS gsheetmapping (
+            Team TEXT PRIMARY KEY,
+            Sheetlink TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
+def connect_team_runbook(team_id, google_sheet_link):
+    data = request.json
+    try:
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO gsheetmapping (Team, Sheetlink)
+            VALUES (?, ?)
+        ''', (team_id, google_sheet_link))
+        conn.commit()
+        conn.close()
+        print("created")
+        return "created", 201
+    except Exception as e:
+        print(str(e))
+        return jsonify({"error": str(e)}), 500
+
+# Get a specific message by ID
+def get_team_runbook(team_id):
+    print("team id : ", team_id)
+    try:
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM gsheetmapping WHERE Team = ?', (team_id,))
+        message = cursor.fetchone()
+        conn.close()
+        print(message)
+        if message:
+            return message
+        else:
+            return jsonify({"error": "Message not found"}), 404
+    except Exception as e:
+        print(str(e))
+        return jsonify({"error": str(e)}), 500
+
+# Delete a message by ID
+def disconnect_team_runbook(team_id):
+    try:
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM gsheetmapping WHERE team = ?', (team_id,))
+        conn.commit()
+        conn.close()
+        print("deleted")
+        return "deleted"
+    except Exception as e:
+        print(str(e))
+        return jsonify({"error": str(e)}), 500
+
+
+# Create the table on startup
+create_table()
 # Initialize Slack WebClient and Event Adapter
 slack_token = os.environ["SLACK_BOT_TOKEN"]
 client = WebClient(token=slack_token)
@@ -31,7 +93,7 @@ def sendBotReply(channel, text, thread_ts):
 # Define event handler for message events
 @slack_events_adapter.on("message")
 def message(event_data):
-    print(event_data)
+    #print(event_data)
     event = event_data["event"]
     text = event["text"]
     channel = event["channel"]
@@ -40,117 +102,153 @@ def message(event_data):
         split_string = text.split()
         if len(split_string) < 4:
             sendBotReply(channel=channel, text = "Team name or google sheet link is missing!", thread_ts=event.get("thread_ts"))
-            return
+            return 'OK', 200
         team_name = split_string[2]
         g_sheet_link = split_string[3]
+        connect_team_runbook(team_name, g_sheet_link)
         sendBotReply(channel=channel, text = f"Sheet connected!{team_name} {g_sheet_link}", thread_ts=event.get("thread_ts"))
+        resp = Response(response=json.dumps(response), status=200,  mimetype="application/json")
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
     elif "knowledgeCrow get" in text:
         split_string = text.split()
         if len(split_string) < 3:
             sendBotReply(channel=channel, text = "Team name not specified in get!", thread_ts=event.get("thread_ts"))
-            return
+            return 'OK', 200
         team_name = split_string[2]
-        sendBotReply(channel=channel, text = f"Sheet value! {team_name}", thread_ts=event.get("thread_ts"))
+        link = get_team_runbook(team_name)
+        sendBotReply(channel=channel, text = f"Sheet value! {link}", thread_ts=event.get("thread_ts"))
+        resp = Response(response=json.dumps(response), status=200,  mimetype="application/json")
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
     elif "knowledgeCrow disconnect" in text:
         split_string = text.split()
         if len(split_string) < 3:
             sendBotReply(channel=channel, text = "Team name not specified in disconnect!", thread_ts=event.get("thread_ts"))
-            return
+            return 'OK', 200
         team_name = split_string[2]
+        disconnect_team_runbook(team_name)
         sendBotReply(channel=channel, text = f"Sheet disconnected! {team_name}", thread_ts=event.get("thread_ts"))
+        resp = Response(response=json.dumps(response), status=200,  mimetype="application/json")
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp             
     elif "knowledgeCrow add" in text:
         if event.get("subtype") is None and isThread:
             thread_ts = event.get("thread_ts")
-            print("passed trigger check")
+            #print("passed trigger check")
             try:
                 # Get conversation history for the thread
                 result = client.conversations_replies(channel=channel, ts=thread_ts)
                 messages = result["messages"]
-                print("passed reply retrieval")
+                #print("passed reply retrieval")
                 # Extract user information and message text
                 summary = [{"user": message.get("user", ""), "text": message.get("text", "")} for message in messages]
-                print("passed summary creation")
+                #print("passed summary creation")
                 # Prepare JSON response
                 response = {
                     "channel_id": channel,
                     "thread_ts": thread_ts,
-                    "messages": summary
+                    "messages": summary,
+                    "ok":"true"
                 }
-                client.chat_postMessage(channel=channel, thread_ts=thread_ts, text = "Recorded!")
-                #add_data_to_google_sheets("Team A", "Topic 1", "https://example.com", "Summary of the chat.")
-                print(response)
-                return jsonify(response)
+                val = client.chat_postMessage(channel=channel, thread_ts=thread_ts, text = "Recorded!")
+                get_team_runbook()
+                add_data_to_google_sheets("1hGZvhmaL1LOtEf-lA4TIu5uZfKaiwf6J3HJzowuvCWs", "topic", "some link", "summary")
+                #print(response)
+                resp = Response(response=json.dumps(response), status=200,  mimetype="application/json")
+                resp.headers['Access-Control-Allow-Origin'] = '*'
+                return resp
             except Exception as e:
-                return jsonify({"error": str(e)})
+                resp = Response(response=json.dumps(response), status=200,  mimetype="application/json")
+                resp.headers['Access-Control-Allow-Origin'] = '*'
+                return resp
         else:
             sendBotReply(channel=channel, text = "knowledgeCrow works only in conversation threads", thread_ts=None)
+            return 'OK', 200
 
-# def create_table():
-#     conn = sqlite3.connect(DATABASE)
-#     cursor = conn.cursor()
-#     cursor.execute('''
-#         CREATE TABLE IF NOT EXISTS MessageStore (
-#             Team TEXT,
-#             Topic TEXT,
-#             ChatLink TEXT,
-#             Summary TEXT
-#         )
-#     ''')
-#     conn.commit()
-#     conn.close()
+def add_data_to_google_sheets(sheet_link, topic, chat_link, summary):
+    # Replace 'your_credentials.json' with the path to your Google Sheets API credentials file
+    print("called google")
+    credentials = Credentials.from_service_account_file('your_credential.json', scopes=['https://www.googleapis.com/auth/spreadsheets','https://www.googleapis.com/auth/drive'])
+    print(credentials)
+    gc = gspread.authorize(credentials)
 
-# def connect_team_runbook(team_id, google_sheet_link):
-#     data = request.json
-#     try:
-#         conn = sqlite3.connect(DATABASE)
-#         cursor = conn.cursor()
-#         cursor.execute('''
-#             INSERT INTO MessageStore (Team, Topic, ChatLink, Summary)
-#             VALUES (?, ?, ?, ?)
-#         ''', (data['team'], data['topic'], data['chat_link'], data['summary']))
-#         conn.commit()
-#         conn.close()
-#         return jsonify({"message": "Message created successfully"}), 201
-#     except Exception as e:
-#         return jsonify({"error": str(e)}), 500
+    # Replace 'Your Spreadsheet Name' with the name of your Google Sheets spreadsheet
+    spreadsheet_name = sheet_link
+    
+    try:
+        # Open the Google Sheets spreadsheet
+        spreadsheet = gc.open_by_key(spreadsheet_name)
 
-# def get_team_runbook(team_id):
-#     try:
-#         conn = sqlite3.connect(DATABASE)
-#         cursor = conn.cursor()
-#         cursor.execute('SELECT * FROM MessageStore')
-#         messages = cursor.fetchall()
-#         conn.close()
-#         return jsonify({"messages": messages})
-#     except Exception as e:
-#         return jsonify({"error": str(e)}), 500
+        if spreadsheet is not None:
+            print("has access to spreadsheet")
+        else:
+            print("spreadsheet not found")
+        
+        # Replace 'Your Worksheet Name' with the name of your worksheet
+        worksheet_name = 'Sheet1'
 
-# # Get a specific message by ID
-# def get_team_runbook(team_id):
-#     try:
-#         conn = sqlite3.connect(DATABASE)
-#         cursor = conn.cursor()
-#         cursor.execute('SELECT * FROM MessageStore WHERE rowid = ?', (message_id,))
-#         message = cursor.fetchone()
-#         conn.close()
-#         if message:
-#             return jsonify({"message": message})
-#         else:
-#             return jsonify({"error": "Message not found"}), 404
-#     except Exception as e:
-#         return jsonify({"error": str(e)}), 500
+        # Select the worksheet
+        worksheet = spreadsheet.worksheet(worksheet_name)
 
-# # Delete a message by ID
-# def disconnect_team_runbook(message_id):
-#     try:
-#         conn = sqlite3.connect(DATABASE)
-#         cursor = conn.cursor()
-#         cursor.execute('DELETE FROM MessageStore WHERE rowid = ?', (message_id,))
-#         conn.commit()
-#         conn.close()
-#         return jsonify({"message": "Message deleted successfully"})
-#     except Exception as e:
-#         return jsonify({"error": str(e)}), 500
+        # Append a new row with the provided data
+        new_row = [topic, chat_link, summary]
+        worksheet.append_row(new_row)
+
+        print("Data added to Google Sheets successfully.")
+    except Exception as e:
+        traceback.print_exc()
+        print(f"Error adding data to Google Sheets: {str(e)}")
+
+
+def connect_team_runbook(team_id, google_sheet_link):
+    data = request.json
+    try:
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO gsheetmapping (Team, Sheetlink)
+            VALUES (?, ?)
+        ''', (team_id, google_sheet_link))
+        conn.commit()
+        conn.close()
+        print("created")
+        return "created", 201
+    except Exception as e:
+        print(str(e))
+        return jsonify({"error": str(e)}), 500
+
+# Get a specific message by ID
+def get_team_runbook(team_id):
+    print("team id : ", team_id)
+    try:
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM gsheetmapping WHERE Team = ?', (team_id,))
+        message = cursor.fetchone()
+        conn.close()
+        print(message)
+        if message:
+            return message
+        else:
+            return jsonify({"error": "Message not found"}), 404
+    except Exception as e:
+        print(str(e))
+        return jsonify({"error": str(e)}), 500
+
+# Delete a message by ID
+def disconnect_team_runbook(team_id):
+    try:
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM gsheetmapping WHERE team = ?', (team_id,))
+        conn.commit()
+        conn.close()
+        print("deleted")
+        return "deleted"
+    except Exception as e:
+        print(str(e))
+        return jsonify({"error": str(e)}), 500
 
 
 # Run the Flask app
@@ -272,28 +370,3 @@ if __name__ == "__main__":
 
 # asyncio.run(async_function())
 
-# def add_data_to_google_sheets(team, topic, chat_link, summary):
-#     # Replace 'your_credentials.json' with the path to your Google Sheets API credentials file
-#     credentials = Credentials.from_service_account_file('your_credentials.json', scopes=['https://www.googleapis.com/auth/spreadsheets'])
-#     gc = gspread.authorize(credentials)
-
-#     # Replace 'Your Spreadsheet Name' with the name of your Google Sheets spreadsheet
-#     spreadsheet_name = 'Your Spreadsheet Name'
-    
-#     try:
-#         # Open the Google Sheets spreadsheet
-#         spreadsheet = gc.open(spreadsheet_name)
-        
-#         # Replace 'Your Worksheet Name' with the name of your worksheet
-#         worksheet_name = 'Your Worksheet Name'
-
-#         # Select the worksheet
-#         worksheet = spreadsheet.worksheet(worksheet_name)
-
-#         # Append a new row with the provided data
-#         new_row = [team, topic, chat_link, summary]
-#         worksheet.append_row(new_row)
-
-#         print("Data added to Google Sheets successfully.")
-#     except Exception as e:
-#         print(f"Error adding data to Google Sheets: {str(e)}")
