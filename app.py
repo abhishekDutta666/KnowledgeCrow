@@ -6,6 +6,8 @@ from slackeventsapi import SlackEventAdapter
 import sqlite3
 import gspread
 from google.oauth2.service_account import Credentials
+import requests
+import asyncio
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -171,6 +173,32 @@ def delete_message(message_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+def make_post_request(url, headers, params):
+    try:
+        # Make the HTTP POST request
+        response = requests.post(url, headers=headers, params=params)
+
+        # Print the request details
+        print(f"Request URL: {response.request.url}")
+        print(f"Request Headers: {response.request.headers}")
+        print(f"Request Body: {response.request.body}")
+
+        # Print the response details
+        print(f"Response Status Code: {response.status_code}")
+        print(f"Response Headers: {response.headers}")
+        print(f"Response Content: {response.text}")
+
+    except requests.RequestException as e:
+        print(f"Error making HTTP POST request: {e}")
+
+# Example usage
+url = "https://example.com/api/endpoint"
+auth_headers = {"Authorization": "Bearer YOUR_ACCESS_TOKEN"}
+request_params = {"param1": "value1", "param2": "value2"}
+
+make_post_request(url, headers=auth_headers, params=request_params)
+
+
 #knowledgeCrow create personal gsheetlink
 #knowledgeCrow create team teamId gsheetlink
 #knowledgeCrow get personal
@@ -178,6 +206,12 @@ def delete_message(message_id):
 #knowledgeCrow delete personal
 #knowledgeCrow delete team teamId
 
+async def async_function():
+    print("Async function started")
+    await asyncio.sleep(2)  # Simulate an asynchronous task (e.g., I/O operation)
+    print("Async function completed")
+
+asyncio.run(async_function())
 
 # Run the Flask app
 if __name__ == "__main__":
