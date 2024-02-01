@@ -1,31 +1,48 @@
 import os
-from slack_bolt import App
+import json
+from slack import WebClient
+from flask import Flask, request, jsonify
+from slackeventsapi import SlackEventAdapter
 
-# Load environment variables from .env file
-from dotenv import load_dotenv
+# Initialize Flask app
+app = Flask(__name__)
 
-load_dotenv()
+# Initialize Slack WebClient and Event Adapter
+slack_token = os.environ["SLACK_BOT_TOKEN"]
+client = WebClient(token=slack_token)
+slack_events_adapter = SlackEventAdapter(os.environ["SLACK_SIGNING_SECRET"], "/slack/events", app)
 
-# Initialize the Slack app with your bot token
-app = App(
-    signing_secret=os.environ.get("SLACK_SIGNING_SECRET"),
-    token=os.environ.get("SLACK_BOT_TOKEN"),
-)
+# Define event handler for message events
+@slack_events_adapter.on("message")
+def message(event_data):
+    print(event_data)
+    event = event_data["event"]
+    if event.get("subtype") is None and "thread_ts" in event:
+        channel = event["channel"]
+        thread_ts = event["thread_ts"]
+        text = event["text"]
+        print("passed thread check")
+        if "knowledgeCrow" in text:
+            print("passed trigger check")
+            try:
+                # Get conversation history for the thread
+                result = client.conversations_replies(channel=channel, ts=thread_ts)
+                messages = result["messages"]
+                print("passed reply retrieval")
+                # Extract user information and message text
+                summary = [{"user": message.get("user", ""), "text": message.get("text", "")} for message in messages]
+                print("passed summary creation")
+                # Prepare JSON response
+                response = {
+                    "channel_id": channel,
+                    "thread_ts": thread_ts,
+                    "messages": summary
+                }
+                print(response)
+                return jsonify(response)
+            except Exception as e:
+                return jsonify({"error": str(e)})
 
-# Define a command listener for /apollo
-@app.command("/apollo")
-def apollo_command(ack, say, command):
-    # Acknowledge the command request
-    ack()
-
-    # Extract information from the command payload
-    #channel_id = command["channel_id"]
-
-    # Generate and send the chat link
-    #chat_link = f"https://slack.com/app_redirect?channel={channel_id}"
-    #say(f"Here is the chat link for the /apollo thread: {chat_link}")
-    say(f"Hello")
-
-# Start the app
+# Run the Flask app
 if __name__ == "__main__":
-    app.start(port=int(os.environ.get("PORT", 3000)))
+    app.run(port=3000, debug=True)
