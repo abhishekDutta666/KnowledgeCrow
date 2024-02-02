@@ -8,12 +8,17 @@ import sqlite3
 import gspread
 from google.oauth2.service_account import Credentials
 import threading
+import requests
+import time
 
 DATABASE = 'knowledge-crow'
 app = Flask(__name__)
 # Initialize Slack WebClient and Event Adapter
 slack_token = os.environ["SLACK_BOT_TOKEN"]
 client = WebClient(token=slack_token)
+azure_url = os.environ["AZURE_URL"]
+azure_auth_key = os.environ["AZURE_API_KEY"]
+
 slack_events_adapter = SlackEventAdapter(os.environ["SLACK_SIGNING_SECRET"], "/slack/events", app)
 
 def create_table():
@@ -110,13 +115,11 @@ def save(event):
             try:
                 result = client.conversations_replies(channel=channel, ts=thread_ts)
                 messages = result["messages"]
-                summary = [{"user": message.get("user", ""), "text": message.get("text", "")} for message in messages]
-                response = {
-                    "channel_id": channel,
-                    "thread_ts": thread_ts,
-                    "messages": summary,
-                    "ok":"true"
-                }
+                chat = [{"user": message.get("user", ""), "text": message.get("text", "")} for message in messages]
+                chat = chat[:-1]
+                azureReqBody = convertToAzureFormat(chat)
+                headers = {"Content-Type":"application/json", "Ocp-Apim-Subscription-Key":azure_auth_key}
+                respUrl = callAzureML(azure_url,azureReqBody, {}, headers)
                 link, status = get_team_runbook(team_id)
                 if status != 200:
                     sendBotReply(channel=channel, text = "There was a issue getting the sheet link!", thread_ts=event.get("thread_ts"))
@@ -127,7 +130,9 @@ def save(event):
                 sheet_key = extract_sheet_id(link)
                 convoDetails = client.chat_getPermalink(channel=channel, message_ts=thread_ts)
                 chat_link = convoDetails['permalink']
-                _, status = add_data_to_google_sheets(sheet_key, title, chat_link, "summary")
+                time.sleep(3)
+                summary = getAzureMLResp(url = respUrl, headers = headers)
+                _, status = add_data_to_google_sheets(sheet_key, title, chat_link, summary)
                 if status !=200:
                     sendBotReply(channel=channel, text = "unable to update google sheets!", thread_ts=event.get("thread_ts"))
                     return
@@ -289,123 +294,71 @@ def add_data_to_google_sheets(sheet_key, topic, chat_link, summary):
         print(f"Error adding data to Google Sheets: {str(e)}")
         return "failure", 500
 
+def convertToAzureFormat(conversationList):
+    conversationItemList=[]
+    for idx, item in enumerate(conversationList):
+        conversation_item = {
+            "text": item["text"],
+            "id": str(idx),
+            "role": "Agent",
+            "participantId": item["user"]
+        }
+        conversationItemList.append(conversation_item)
+    conversationsObj = [{
+        "conversationItems": conversationItemList,
+        "modality": "text",
+        "id": "conversation1",
+        "language": "en"
+    }]
+
+    analysisInputObj = {"conversations":conversationsObj}
+
+    requestBody = {
+        "displayName": "Engineering Discussion",
+        "analysisInput": analysisInputObj,
+        "tasks": [
+            {
+            "taskName": "summary",
+            "kind": "ConversationalSummarizationTask",
+            "parameters": {
+                "summaryAspects": ["resolution"],
+                "sentenceCount": 1
+            }
+            }
+        ]
+    }
+    return requestBody
+
+def callAzureML(url, data=None, params = None, headers = None):
+    try:
+        response = requests.post(url, json=data, params=params, headers=headers)
+        # Check if the request was successful (status code 200)
+        if response.status_code == 202:
+            return response.headers["operation-location"]
+        else:
+            print(f"POST request failed with status code: {response.status_code}")
+    except requests.RequestException as e:
+        print("Error sending POST request:", e)
+
+def getAzureMLResp(url, headers):
+    try:
+        response = requests.get(url, headers=headers)
+        # Check if the request was successful (status code 200)
+        if response.status_code == 200:
+            resp = response.json()
+            summaries = resp["tasks"]["items"][0]["results"]["conversations"][0]["summaries"]
+            print(resp)
+            if len(summaries) == 0:
+                return "Summary could not be created by the AI model"
+            else:
+                return summaries[0]["text"] 
+        else:
+            print(f"POST request failed with status code: {response.status_code}")
+    except requests.RequestException as e:
+        print("Error sending GET request:", e)
+    return "summary"
+
 
 # Run the Flask app
 if __name__ == "__main__":
     app.run(port=3000, debug=True)
-
-# curl --location 'hackdaylink' \
-# --header 'Content-Type: application/json' \
-# --header 'Ocp-Apim-Subscription-Key: apikey' \
-# --data ' 
-# {
-#   "displayName": "Conversation Task Example",
-#   "analysisInput": {
-#     "conversations": [
-#       {
-#         "conversationItems": [
-#           {
-#             "text": "Hello, you’re chatting with Rene. How may I help you?",
-#             "id": "1",
-#             "role": "Agent",
-#             "participantId": "Agent_1"
-#           },
-#           {
-#             "text": "Hi, I tried to set up wifi connection for Smart Brew 300 espresso machine, but it didn’t work.",
-#             "id": "2",
-#             "role": "Customer",
-#             "participantId": "Customer_1"
-#           },
-#           {
-#             "text": "I’m sorry to hear that. Let’s see what we can do to fix this issue. Could you please try the following steps for me? First, could you push the wifi connection button, hold for 3 seconds, then let me know if the power light is slowly blinking on and off every second?",
-#             "id": "3",
-#             "role": "Agent",
-#             "participantId": "Agent_1"
-#           },
-#           {
-#             "text": "Yes, I pushed the wifi connection button, and now the power light is slowly blinking.",
-#             "id": "4",
-#             "role": "Customer",
-#             "participantId": "Customer_1"
-#           },
-#           {
-#             "text": "Great. Thank you! Now, please check in your Contoso Coffee app. Does it prompt to ask you to connect with the machine? ",
-#             "id": "5",
-#             "role": "Agent",
-#             "participantId": "Agent_1"
-#           },
-#           {
-#             "text": "No. Nothing happened.",
-#             "id": "6",
-#             "role": "Customer",
-#             "participantId": "Customer_1"
-#           },
-#           {
-#             "text": "I’m very sorry to hear that. Let me see if there’s another way to fix the issue. Please hold on for a minute.",
-#             "id": "7",
-#             "role": "Agent",
-#             "participantId": "Agent_1"
-#           }
-#         ],
-#         "modality": "text",
-#         "id": "conversation1",
-#         "language": "en"
-#       }
-#     ]
-#   },
-#   "tasks": [
-#     {
-#       "taskName": "Conversation Task 1",
-#       "kind": "ConversationalSummarizationTask",
-#       "parameters": {
-#         "summaryAspects": ["issue"]
-#       }
-#     },
-#     {
-#       "taskName": "Conversation Task 2",
-#       "kind": "ConversationalSummarizationTask",
-#       "parameters": {
-#         "summaryAspects": ["resolution"],
-#         "sentenceCount": 1
-#       }
-#     }
-#   ]
-# }
-# '
-
-# def make_post_request(url, headers, params):
-#     try:
-#         # Make the HTTP POST request
-#         response = requests.post(url, headers=headers, params=params)
-
-#         # Print the request details
-#         print(f"Request URL: {response.request.url}")
-#         print(f"Request Headers: {response.request.headers}")
-#         print(f"Request Body: {response.request.body}")
-
-#         # Print the response details
-#         print(f"Response Status Code: {response.status_code}")
-#         print(f"Response Headers: {response.headers}")
-#         print(f"Response Content: {response.text}")
-
-#     except requests.RequestException as e:
-#         print(f"Error making HTTP POST request: {e}")
-
-# # Example usage
-# url = "https://example.com/api/endpoint"
-# auth_headers = {"Authorization": "Bearer YOUR_ACCESS_TOKEN"}
-# request_params = {"param1": "value1", "param2": "value2"}
-
-# make_post_request(url, headers=auth_headers, params=request_params)
-
-# #knowledgeCrow create teamId gsheetlink
-# #knowledgeCrow get teamId
-# #knowledgeCrow delete teamId
-
-# async def async_function():
-#     print("Async function started")
-#     await asyncio.sleep(2)  # Simulate an asynchronous task (e.g., I/O operation)
-#     print("Async function completed")
-
-# asyncio.run(async_function())
-
