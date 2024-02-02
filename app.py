@@ -31,7 +31,7 @@ def create_table():
 # Create the table on startup
 create_table()
 
-def connect_team_runbook(conn,team_id, google_sheet_link):
+def connect_team_runbook(team_id, google_sheet_link):
     with app.app_context():
         try:
             conn = sqlite3.connect(DATABASE)
@@ -47,7 +47,7 @@ def connect_team_runbook(conn,team_id, google_sheet_link):
             return jsonify({"error": str(e)}), 500
 
 # Get a specific message by ID
-def get_team_runbook(conn, team_id):
+def get_team_runbook(team_id):
     with app.app_context():
         try:
             conn = sqlite3.connect(DATABASE)
@@ -64,7 +64,7 @@ def get_team_runbook(conn, team_id):
             return jsonify({"error": str(e)}), 500
 
 # Delete a message by ID
-def disconnect_team_runbook(conn, team_id):
+def disconnect_team_runbook(team_id):
     with app.app_context():
         try:
             conn = sqlite3.connect(DATABASE)
@@ -98,7 +98,7 @@ def getTopicAndTeamForSaveAction(text):
     spaceSepWords = parts[0].split()
     return spaceSepWords[2], parts[1]
 
-def save(event,conn):
+def save(event):
     with app.app_context():
         text = event["text"]
         channel = event["channel"]
@@ -117,7 +117,7 @@ def save(event,conn):
                     "messages": summary,
                     "ok":"true"
                 }
-                link, status = get_team_runbook(conn, team_id)
+                link, status = get_team_runbook(team_id)
                 if status != 200:
                     sendBotReply(channel=channel, text = "There was a issue getting the sheet link!", thread_ts=event.get("thread_ts"))
                     # resp = Response(response="There was a issue getting the sheet link!", status=200,  mimetype="application/json")
@@ -152,7 +152,7 @@ def save(event,conn):
             # resp.headers['Access-Control-Allow-Origin'] = '*'
             # return resp
 
-def disconnect(event,conn):
+def disconnect(event):
     with app.app_context():
         text = event["text"]
         channel = event["channel"]
@@ -164,7 +164,7 @@ def disconnect(event,conn):
             # return resp
             return
         team_name = split_string[2]
-        _, status = disconnect_team_runbook(conn, team_name)
+        _, status = disconnect_team_runbook(team_name)
         if status !=204:
             sendBotReply(channel=channel, text = "There was some issue disconnecting, please try again!", thread_ts=event.get("thread_ts"))
             # resp = Response(response="ok", status=200,  mimetype="application/json")
@@ -174,7 +174,7 @@ def disconnect(event,conn):
         sendBotReply(channel=channel, text = f"{team_name}'s sheet disconnected!", thread_ts=event.get("thread_ts"))
         return
 
-def getLink(event,conn):
+def getLink(event):
     with app.app_context():
         text = event["text"]
         channel = event["channel"]
@@ -183,13 +183,13 @@ def getLink(event,conn):
             sendBotReply(channel=channel, text = "Team name not specified in get!", thread_ts=event.get("thread_ts"))
             return
         team_name = split_string[2]
-        link, status= get_team_runbook(conn, team_name)
+        link, status= get_team_runbook(team_name)
         if status != 200:
             sendBotReply(channel=channel, text = "There was a issue getting the sheet link!", thread_ts=event.get("thread_ts"))
             return
         sendBotReply(channel=channel, text = f"Sheet: {link}", thread_ts=event.get("thread_ts"))
 
-def connect(event,conn):
+def connect(event):
     with app.app_context():
         text = event["text"]
         channel = event["channel"]
@@ -202,7 +202,7 @@ def connect(event,conn):
             return
         team_name = split_string[2]
         g_sheet_link = split_string[3]
-        _, status = connect_team_runbook(conn, team_name, g_sheet_link)
+        _, status = connect_team_runbook(team_name, g_sheet_link)
         if status != 201:
             sendBotReply(channel=channel, text = "There was a issue connecting the sheet!", thread_ts=event.get("thread_ts"))
             # resp = Response(response="issue connecting to sheet", status=200,  mimetype="application/json")
@@ -212,24 +212,24 @@ def connect(event,conn):
         sendBotReply(channel=channel, text = f"Sheet connected! Team: {team_name} Sheet: {g_sheet_link}", thread_ts=event.get("thread_ts"))
         return
         
-def connect_thread(event,conn):
+def connect_thread(event):
     with app.app_context():
-        connect(event,conn)
+        connect(event)
     return
 
-def getLink_thread(event,conn):
+def getLink_thread(event):
     with app.app_context():
-        getLink(event, conn)
+        getLink(event)
     return
 
-def disconnect_thread(event,conn):
+def disconnect_thread(event):
     with app.app_context():
-        disconnect(event,conn)
+        disconnect(event)
     return
 
-def save_thread(event,conn):
+def save_thread(event):
     with app.app_context():
-        save(event,conn)
+        save(event)
     return
 
 # Define event handler for message events
@@ -239,31 +239,30 @@ def message(event_data):
     text = event["text"]
     channel = event["channel"]
     isThread = "thread_ts" in event
-    conn = sqlite3.connect(DATABASE)
     if "knowledgeCrow connect" in text:
         #run in background
         
-        threading.Thread(target=connect_thread, args=(event,conn)).start()
+        threading.Thread(target=connect_thread, args=(event,)).start()
         resp = Response(response="success", status=200,  mimetype="application/json")
         resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp
     elif "knowledgeCrow get" in text:
         #run in background
         
-        threading.Thread(target=getLink_thread, args=(event,conn)).start()
+        threading.Thread(target=getLink_thread, args=(event,)).start()
         resp = Response(response="ok", status=200,  mimetype="application/json")
         resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp
     elif "knowledgeCrow disconnect" in text:
         #run in background
         
-        threading.Thread(target=disconnect_thread, args=(event,conn)).start()
+        threading.Thread(target=disconnect_thread, args=(event,)).start()
         resp = Response(response="ok", status=200,  mimetype="application/json")
         resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp             
     elif "knowledgeCrow save" in text:
         #run in background
-        threading.Thread(target=save_thread, args=(event,conn)).start()
+        threading.Thread(target=save_thread, args=(event,)).start()
         resp = Response(response="ok", status=200,  mimetype="application/json")
         resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp
