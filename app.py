@@ -1,20 +1,20 @@
 import os
 import json
+import re
 from slack import WebClient
 from flask import Flask, request, jsonify, Response
 from slackeventsapi import SlackEventAdapter
 import sqlite3
 import gspread
-import traceback
 from google.oauth2.service_account import Credentials
-# import requests
-# import asyncio
+import threading
 
-# Initialize Flask app
-app = Flask(__name__)
-
-# Database configuration
 DATABASE = 'knowledge-crow'
+app = Flask(__name__)
+# Initialize Slack WebClient and Event Adapter
+slack_token = os.environ["SLACK_BOT_TOKEN"]
+client = WebClient(token=slack_token)
+slack_events_adapter = SlackEventAdapter(os.environ["SLACK_SIGNING_SECRET"], "/slack/events", app)
 
 def create_table():
     conn = sqlite3.connect(DATABASE)
@@ -28,227 +28,267 @@ def create_table():
     conn.commit()
     conn.close()
 
-def connect_team_runbook(team_id, google_sheet_link):
-    data = request.json
-    try:
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO gsheetmapping (Team, Sheetlink)
-            VALUES (?, ?)
-        ''', (team_id, google_sheet_link))
-        conn.commit()
-        conn.close()
-        print("created")
-        return "created", 201
-    except Exception as e:
-        print(str(e))
-        return jsonify({"error": str(e)}), 500
-
-# Get a specific message by ID
-def get_team_runbook(team_id):
-    print("team id : ", team_id)
-    try:
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM gsheetmapping WHERE Team = ?', (team_id,))
-        message = cursor.fetchone()
-        conn.close()
-        print(message)
-        if message:
-            return message
-        else:
-            return jsonify({"error": "Message not found"}), 404
-    except Exception as e:
-        print(str(e))
-        return jsonify({"error": str(e)}), 500
-
-# Delete a message by ID
-def disconnect_team_runbook(team_id):
-    try:
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM gsheetmapping WHERE team = ?', (team_id,))
-        conn.commit()
-        conn.close()
-        print("deleted")
-        return "deleted"
-    except Exception as e:
-        print(str(e))
-        return jsonify({"error": str(e)}), 500
-
-
 # Create the table on startup
 create_table()
-# Initialize Slack WebClient and Event Adapter
-slack_token = os.environ["SLACK_BOT_TOKEN"]
-client = WebClient(token=slack_token)
-slack_events_adapter = SlackEventAdapter(os.environ["SLACK_SIGNING_SECRET"], "/slack/events", app)
+
+def connect_team_runbook(conn,team_id, google_sheet_link):
+    with app.app_context():
+        try:
+            conn = sqlite3.connect(DATABASE)
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO gsheetmapping (Team, Sheetlink)
+                VALUES (?, ?)
+            ''', (team_id, google_sheet_link))
+            conn.commit()
+            conn.close()
+            return "created", 201
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+# Get a specific message by ID
+def get_team_runbook(conn, team_id):
+    with app.app_context():
+        try:
+            conn = sqlite3.connect(DATABASE)
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM gsheetmapping WHERE Team = ?', (team_id,))
+            message = cursor.fetchone()
+            conn.close()
+            if message:
+                return message[1], 200
+            else:
+                return jsonify({"error": "Message not found"}), 404
+        except Exception as e:
+            print(str(e))
+            return jsonify({"error": str(e)}), 500
+
+# Delete a message by ID
+def disconnect_team_runbook(conn, team_id):
+    with app.app_context():
+        try:
+            conn = sqlite3.connect(DATABASE)
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM gsheetmapping WHERE team = ?', (team_id,))
+            conn.commit()
+            conn.close()
+            return "deleted", 204
+        except Exception as e:
+            print(str(e))
+            return jsonify({"error": str(e)}), 500
+
+def extract_sheet_id(sheets_link):
+    pattern = r'/d/([a-zA-Z0-9-_]+)'
+    match = re.search(pattern, sheets_link)
+    if match:
+        return match.group(1)
+    else:
+        return None
 
 def sendBotReply(channel, text, thread_ts):
     if thread_ts is not None:
         client.chat_postMessage(channel=channel, text=text, thread_ts = thread_ts)
     else:
         client.chat_postMessage(channel=channel, text=text)
-# Define event handler for message events
-@slack_events_adapter.on("message")
-def message(event_data):
-    #print(event_data)
-    event = event_data["event"]
-    text = event["text"]
-    channel = event["channel"]
-    isThread = "thread_ts" in event
-    if "knowledgeCrow connect" in text:
-        split_string = text.split()
-        if len(split_string) < 4:
-            sendBotReply(channel=channel, text = "Team name or google sheet link is missing!", thread_ts=event.get("thread_ts"))
-            return 'OK', 200
-        team_name = split_string[2]
-        g_sheet_link = split_string[3]
-        connect_team_runbook(team_name, g_sheet_link)
-        sendBotReply(channel=channel, text = f"Sheet connected!{team_name} {g_sheet_link}", thread_ts=event.get("thread_ts"))
-        resp = Response(response=json.dumps(response), status=200,  mimetype="application/json")
-        resp.headers['Access-Control-Allow-Origin'] = '*'
-        return resp
-    elif "knowledgeCrow get" in text:
-        split_string = text.split()
-        if len(split_string) < 3:
-            sendBotReply(channel=channel, text = "Team name not specified in get!", thread_ts=event.get("thread_ts"))
-            return 'OK', 200
-        team_name = split_string[2]
-        link = get_team_runbook(team_name)
-        sendBotReply(channel=channel, text = f"Sheet value! {link}", thread_ts=event.get("thread_ts"))
-        resp = Response(response=json.dumps(response), status=200,  mimetype="application/json")
-        resp.headers['Access-Control-Allow-Origin'] = '*'
-        return resp
-    elif "knowledgeCrow disconnect" in text:
-        split_string = text.split()
-        if len(split_string) < 3:
-            sendBotReply(channel=channel, text = "Team name not specified in disconnect!", thread_ts=event.get("thread_ts"))
-            return 'OK', 200
-        team_name = split_string[2]
-        disconnect_team_runbook(team_name)
-        sendBotReply(channel=channel, text = f"Sheet disconnected! {team_name}", thread_ts=event.get("thread_ts"))
-        resp = Response(response=json.dumps(response), status=200,  mimetype="application/json")
-        resp.headers['Access-Control-Allow-Origin'] = '*'
-        return resp             
-    elif "knowledgeCrow add" in text:
-        if event.get("subtype") is None and isThread:
+def getTopicAndTeamForSaveAction(text):
+    parts = text.split("title=")
+    if len(parts) == 1:
+        spaceSepWords = text.split()
+        return spaceSepWords[2], None
+    spaceSepWords = parts[0].split()
+    return spaceSepWords[2], parts[1]
+
+def save(event,conn):
+    with app.app_context():
+        text = event["text"]
+        channel = event["channel"]
+        if event.get("subtype") is None and "thread_ts" in event:
             thread_ts = event.get("thread_ts")
-            #print("passed trigger check")
+            team_id, title = getTopicAndTeamForSaveAction(text)
+            if title is None:
+                title = "important thread"
             try:
-                # Get conversation history for the thread
                 result = client.conversations_replies(channel=channel, ts=thread_ts)
                 messages = result["messages"]
-                #print("passed reply retrieval")
-                # Extract user information and message text
                 summary = [{"user": message.get("user", ""), "text": message.get("text", "")} for message in messages]
-                #print("passed summary creation")
-                # Prepare JSON response
                 response = {
                     "channel_id": channel,
                     "thread_ts": thread_ts,
                     "messages": summary,
                     "ok":"true"
                 }
-                val = client.chat_postMessage(channel=channel, thread_ts=thread_ts, text = "Recorded!")
-                get_team_runbook()
-                add_data_to_google_sheets("1hGZvhmaL1LOtEf-lA4TIu5uZfKaiwf6J3HJzowuvCWs", "topic", "some link", "summary")
-                #print(response)
-                resp = Response(response=json.dumps(response), status=200,  mimetype="application/json")
-                resp.headers['Access-Control-Allow-Origin'] = '*'
-                return resp
+                link, status = get_team_runbook(conn, team_id)
+                if status != 200:
+                    sendBotReply(channel=channel, text = "There was a issue getting the sheet link!", thread_ts=event.get("thread_ts"))
+                    # resp = Response(response="There was a issue getting the sheet link!", status=200,  mimetype="application/json")
+                    # resp.headers['Access-Control-Allow-Origin'] = '*'
+                    # return resp
+                    return
+                sheet_key = extract_sheet_id(link)
+                convoDetails = client.chat_getPermalink(channel=channel, message_ts=thread_ts)
+                chat_link = convoDetails['permalink']
+                _, status = add_data_to_google_sheets(sheet_key, title, chat_link, "summary")
+                if status !=200:
+                    sendBotReply(channel=channel, text = "unable to update google sheets!", thread_ts=event.get("thread_ts"))
+                    return
+                    # resp = Response(response="ok", status=200,  mimetype="application/json")
+                    # resp.headers['Access-Control-Allow-Origin'] = '*'
+                    # return resp
+                sendBotReply(channel=channel, text = "Recorded!", thread_ts=thread_ts)
+                return
+                # resp = Response(response="ok", status=200,  mimetype="application/json")
+                # resp.headers['Access-Control-Allow-Origin'] = '*'
+                # return resp
             except Exception as e:
-                resp = Response(response=json.dumps(response), status=200,  mimetype="application/json")
-                resp.headers['Access-Control-Allow-Origin'] = '*'
-                return resp
+                print(e)
+                return
+                # resp = Response(response="ok", status=200,  mimetype="application/json")
+                # resp.headers['Access-Control-Allow-Origin'] = '*'
+                # return resp
         else:
             sendBotReply(channel=channel, text = "knowledgeCrow works only in conversation threads", thread_ts=None)
-            return 'OK', 200
+            return
+            # resp = Response(response="ok", status=200,  mimetype="application/json")
+            # resp.headers['Access-Control-Allow-Origin'] = '*'
+            # return resp
 
-def add_data_to_google_sheets(sheet_link, topic, chat_link, summary):
+def disconnect(event,conn):
+    with app.app_context():
+        text = event["text"]
+        channel = event["channel"]
+        split_string = text.split()
+        if len(split_string) < 3:
+            sendBotReply(channel=channel, text = "Team name not specified in disconnect!", thread_ts=event.get("thread_ts"))
+            # resp = Response(response="ok", status=200,  mimetype="application/json")
+            # resp.headers['Access-Control-Allow-Origin'] = '*'
+            # return resp
+            return
+        team_name = split_string[2]
+        _, status = disconnect_team_runbook(conn, team_name)
+        if status !=204:
+            sendBotReply(channel=channel, text = "There was some issue disconnecting, please try again!", thread_ts=event.get("thread_ts"))
+            # resp = Response(response="ok", status=200,  mimetype="application/json")
+            # resp.headers['Access-Control-Allow-Origin'] = '*'
+            # return resp
+            return
+        sendBotReply(channel=channel, text = f"{team_name}'s sheet disconnected!", thread_ts=event.get("thread_ts"))
+        return
+
+def getLink(event,conn):
+    with app.app_context():
+        text = event["text"]
+        channel = event["channel"]
+        split_string = text.split()
+        if len(split_string) < 3:
+            sendBotReply(channel=channel, text = "Team name not specified in get!", thread_ts=event.get("thread_ts"))
+            return
+        team_name = split_string[2]
+        link, status= get_team_runbook(conn, team_name)
+        if status != 200:
+            sendBotReply(channel=channel, text = "There was a issue getting the sheet link!", thread_ts=event.get("thread_ts"))
+            return
+        sendBotReply(channel=channel, text = f"Sheet: {link}", thread_ts=event.get("thread_ts"))
+
+def connect(event,conn):
+    with app.app_context():
+        text = event["text"]
+        channel = event["channel"]
+        split_string = text.split()
+        if len(split_string) < 4:
+            sendBotReply(channel=channel, text = "Team name or google sheet link is missing!", thread_ts=event.get("thread_ts"))
+            # resp = Response(response="fsadf", status=200,  mimetype="application/json")
+            # resp.headers['Access-Control-Allow-Origin'] = '*'
+            # return resp
+            return
+        team_name = split_string[2]
+        g_sheet_link = split_string[3]
+        _, status = connect_team_runbook(conn, team_name, g_sheet_link)
+        if status != 201:
+            sendBotReply(channel=channel, text = "There was a issue connecting the sheet!", thread_ts=event.get("thread_ts"))
+            # resp = Response(response="issue connecting to sheet", status=200,  mimetype="application/json")
+            # resp.headers['Access-Control-Allow-Origin'] = '*'
+            # return resp
+            return
+        sendBotReply(channel=channel, text = f"Sheet connected! Team: {team_name} Sheet: {g_sheet_link}", thread_ts=event.get("thread_ts"))
+        return
+        
+def connect_thread(event,conn):
+    with app.app_context():
+        connect(event,conn)
+    return
+
+def getLink_thread(event,conn):
+    with app.app_context():
+        getLink(event, conn)
+    return
+
+def disconnect_thread(event,conn):
+    with app.app_context():
+        disconnect(event,conn)
+    return
+
+def save_thread(event,conn):
+    with app.app_context():
+        save(event,conn)
+    return
+
+# Define event handler for message events
+@slack_events_adapter.on("message")
+def message(event_data):
+    event = event_data["event"]
+    text = event["text"]
+    channel = event["channel"]
+    isThread = "thread_ts" in event
+    conn = sqlite3.connect(DATABASE)
+    if "knowledgeCrow connect" in text:
+        #run in background
+        
+        threading.Thread(target=connect_thread, args=(event,conn)).start()
+        resp = Response(response="success", status=200,  mimetype="application/json")
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    elif "knowledgeCrow get" in text:
+        #run in background
+        
+        threading.Thread(target=getLink_thread, args=(event,conn)).start()
+        resp = Response(response="ok", status=200,  mimetype="application/json")
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    elif "knowledgeCrow disconnect" in text:
+        #run in background
+        
+        threading.Thread(target=disconnect_thread, args=(event,conn)).start()
+        resp = Response(response="ok", status=200,  mimetype="application/json")
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp             
+    elif "knowledgeCrow save" in text:
+        #run in background
+        threading.Thread(target=save_thread, args=(event,conn)).start()
+        resp = Response(response="ok", status=200,  mimetype="application/json")
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+
+    resp = Response(response="ok", status=200,  mimetype="application/json")
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    return resp
+
+def add_data_to_google_sheets(sheet_key, topic, chat_link, summary):
     # Replace 'your_credentials.json' with the path to your Google Sheets API credentials file
-    print("called google")
     credentials = Credentials.from_service_account_file('your_credential.json', scopes=['https://www.googleapis.com/auth/spreadsheets','https://www.googleapis.com/auth/drive'])
-    print(credentials)
     gc = gspread.authorize(credentials)
-
-    # Replace 'Your Spreadsheet Name' with the name of your Google Sheets spreadsheet
-    spreadsheet_name = sheet_link
-    
     try:
         # Open the Google Sheets spreadsheet
-        spreadsheet = gc.open_by_key(spreadsheet_name)
-
-        if spreadsheet is not None:
-            print("has access to spreadsheet")
-        else:
-            print("spreadsheet not found")
-        
-        # Replace 'Your Worksheet Name' with the name of your worksheet
+        spreadsheet = gc.open_by_key(sheet_key)
         worksheet_name = 'Sheet1'
-
-        # Select the worksheet
         worksheet = spreadsheet.worksheet(worksheet_name)
-
-        # Append a new row with the provided data
         new_row = [topic, chat_link, summary]
         worksheet.append_row(new_row)
 
         print("Data added to Google Sheets successfully.")
+        return "ok", 200
     except Exception as e:
-        traceback.print_exc()
         print(f"Error adding data to Google Sheets: {str(e)}")
-
-
-def connect_team_runbook(team_id, google_sheet_link):
-    data = request.json
-    try:
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO gsheetmapping (Team, Sheetlink)
-            VALUES (?, ?)
-        ''', (team_id, google_sheet_link))
-        conn.commit()
-        conn.close()
-        print("created")
-        return "created", 201
-    except Exception as e:
-        print(str(e))
-        return jsonify({"error": str(e)}), 500
-
-# Get a specific message by ID
-def get_team_runbook(team_id):
-    print("team id : ", team_id)
-    try:
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM gsheetmapping WHERE Team = ?', (team_id,))
-        message = cursor.fetchone()
-        conn.close()
-        print(message)
-        if message:
-            return message
-        else:
-            return jsonify({"error": "Message not found"}), 404
-    except Exception as e:
-        print(str(e))
-        return jsonify({"error": str(e)}), 500
-
-# Delete a message by ID
-def disconnect_team_runbook(team_id):
-    try:
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM gsheetmapping WHERE team = ?', (team_id,))
-        conn.commit()
-        conn.close()
-        print("deleted")
-        return "deleted"
-    except Exception as e:
-        print(str(e))
-        return jsonify({"error": str(e)}), 500
+        return "failure", 500
 
 
 # Run the Flask app
