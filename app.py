@@ -10,6 +10,7 @@ from google.oauth2.service_account import Credentials
 import threading
 import requests
 import time
+import datetime
 
 DATABASE = 'knowledge-crow'
 app = Flask(__name__)
@@ -298,7 +299,8 @@ def add_data_to_google_sheets(sheet_key, topic, chat_link, summary):
         spreadsheet = gc.open_by_key(sheet_key)
         worksheet_name = 'Sheet1'
         worksheet = spreadsheet.worksheet(worksheet_name)
-        new_row = [topic, chat_link, summary]
+        dateStr = datetime.datetime.now().strftime("%B %d, %Y %I:%M%p")
+        new_row = [dateStr, topic, chat_link, summary]
         worksheet.append_row(new_row)
 
         print("Data added to Google Sheets successfully.")
