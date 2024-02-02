@@ -103,6 +103,18 @@ def getTopicAndTeamForSaveAction(text):
     spaceSepWords = parts[0].split()
     return spaceSepWords[2], parts[1]
 
+def generate_user_names(messages):
+    user_dict = {}
+    user_counter = 1
+    
+    for message in messages:
+        user_id = message.get("user")
+        if user_id not in user_dict:
+            user_dict[user_id] = f"user{user_counter}"
+            user_counter += 1
+    
+    return user_dict
+
 def save(event):
     with app.app_context():
         text = event["text"]
@@ -115,7 +127,8 @@ def save(event):
             try:
                 result = client.conversations_replies(channel=channel, ts=thread_ts)
                 messages = result["messages"]
-                chat = [{"user": message.get("user", ""), "text": message.get("text", "")} for message in messages]
+                userIdMap = generate_user_names(messages=messages)
+                chat = [{"user": userIdMap.get(message.get("user", ""), "user-x"), "text": message.get("text", "")} for message in messages]
                 chat = chat[:-1]
                 azureReqBody = convertToAzureFormat(chat)
                 headers = {"Content-Type":"application/json", "Ocp-Apim-Subscription-Key":azure_auth_key}
@@ -321,8 +334,7 @@ def convertToAzureFormat(conversationList):
             "taskName": "summary",
             "kind": "ConversationalSummarizationTask",
             "parameters": {
-                "summaryAspects": ["resolution"],
-                "sentenceCount": 1
+                "summaryAspects": ["narrative"],
             }
             }
         ]
